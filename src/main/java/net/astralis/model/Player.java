@@ -8,7 +8,9 @@ import net.astralis.database.RedisManager;
 import org.bson.Document;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class Player {
 
@@ -26,11 +28,13 @@ public class Player {
     private final RedisManager redis;
     private final MongoCollection<Document> collection;
 
+    // Lokaler Fallback-Cache
+    private static final Map<String, String> localCache = new ConcurrentHashMap<>();
+
     public Player(UUID uuid, MongoDBManager mongo, RedisManager redis) {
         this.uuid = uuid;
         this.redis = redis;
         this.collection = mongo.getDatabase().getCollection("players");
-
         loadFromMongo();
     }
 
@@ -65,22 +69,41 @@ public class Player {
         collection.updateOne(Filters.eq("uuid", uuid.toString()), new Document("$set", doc), new UpdateOptions().upsert(true));
     }
 
-    // Redis cache
+    // ------------------------
+    // Redis + Local Fallback
+    // ------------------------
+    private void setCacheValue(String key, String value) {
+        try {
+            redis.set(key, value);
+        } catch (Exception e) {
+            localCache.put(key, value);
+        }
+    }
+
+    private String getCacheValue(String key) {
+        try {
+            String val = redis.get(key);
+            if (val != null) return val;
+        } catch (Exception ignored) {
+        }
+        return localCache.get(key);
+    }
+
     public void setOnline(boolean online) {
-        redis.set("player:" + uuid + ":isOnline", String.valueOf(online));
+        setCacheValue("player:" + uuid + ":isOnline", String.valueOf(online));
     }
 
     public boolean isOnline() {
-        String val = redis.get("player:" + uuid + ":isOnline");
+        String val = getCacheValue("player:" + uuid + ":isOnline");
         return val != null && Boolean.parseBoolean(val);
     }
 
     public void setActiveServer(String server) {
-        redis.set("player:" + uuid + ":activeServer", server);
+        setCacheValue("player:" + uuid + ":activeServer", server);
     }
 
     public String getActiveServer() {
-        return redis.get("player:" + uuid + ":activeServer");
+        return getCacheValue("player:" + uuid + ":activeServer");
     }
 
     public void connect() {
@@ -88,6 +111,7 @@ public class Player {
         this.saveToMongo();
         this.setOnline(true);
     }
+
     public void disconnect() {
         this.setOnline(false);
         this.saveToMongo();
